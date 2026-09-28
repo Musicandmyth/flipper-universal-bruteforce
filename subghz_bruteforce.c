@@ -35,6 +35,7 @@ typedef enum {
     SubGhzBfMenuStart,
     SubGhzBfMenuSettings,
     SubGhzBfMenuAbout,
+    SubGhzBfMenuCredit,
 } SubGhzBfMenuItem;
 
 typedef struct {
@@ -148,6 +149,8 @@ static void subghz_bf_build_menu(SubGhzBfApp* app) {
     submenu_add_item(
         app->submenu, "Settings", SubGhzBfMenuSettings, subghz_bf_submenu_callback, app);
     submenu_add_item(app->submenu, "About", SubGhzBfMenuAbout, subghz_bf_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "by @musicandmyth", SubGhzBfMenuCredit, subghz_bf_submenu_callback, app);
 }
 
 static void subghz_bf_show_message(SubGhzBfApp* app, const char* header, const char* text) {
@@ -210,6 +213,7 @@ static void subghz_bf_submenu_callback(void* context, uint32_t index) {
         view_dispatcher_switch_to_view(app->view_dispatcher, SubGhzBfViewSettings);
         break;
     case SubGhzBfMenuAbout:
+    case SubGhzBfMenuCredit:
         view_dispatcher_switch_to_view(app->view_dispatcher, SubGhzBfViewAbout);
         break;
     default:
@@ -276,6 +280,9 @@ static void subghz_bf_build_settings(SubGhzBfApp* app) {
         variable_item_list_add(app->settings_list, "Loop forever", 2, subghz_bf_loop_changed, app);
     variable_item_set_current_value_index(item, app->loop ? 1 : 0);
     variable_item_set_current_value_text(item, app->loop ? "On" : "Off");
+
+    // Static credit line at the bottom (0 values = non-interactive label).
+    variable_item_list_add(app->settings_list, "by @musicandmyth", 0, NULL, NULL);
 }
 
 // ---------------------------------------------------------------------------
