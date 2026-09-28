@@ -1,4 +1,4 @@
-#include "subghz_tx.h"
+#include "signal_tx.h"
 
 #include <furi.h>
 #include <furi_hal.h>
@@ -17,10 +17,11 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define TAG            "SubGhzBf"
-#define SUBGHZ_FOLDER  EXT_PATH("subghz")
-#define MAX_NAME_LEN   256
-#define MAX_FILES      2000
+#define TAG              "SigBf"
+#define BROWSE_ROOT      EXT_PATH("")
+#define MAX_NAME_LEN     256
+#define MAX_FILES        2000
+#define EMULATE_MIN_MS   1500 // minimum dwell time for emulation formats (RFID/iBtn/NFC)
 
 typedef enum {
     SubGhzBfViewMenu,
@@ -47,7 +48,7 @@ typedef struct {
     Storage* storage;
     DialogsApp* dialogs;
     NotificationApp* notifications;
-    SubGhzBfTx* tx;
+    SignalTx* tx;
 
     FuriString* folder;
     uint32_t file_count;
@@ -76,9 +77,9 @@ typedef struct {
     uint32_t sent_ok;
     uint32_t errors;
     uint32_t cycle;
-    uint32_t frequency;
+    char type[8];
     char filename[64];
-    char protocol[36];
+    char info[48];
     char status[24];
 } SubGhzBfRunModel;
 
@@ -86,12 +87,8 @@ typedef struct {
 // Helpers
 // ---------------------------------------------------------------------------
 
-static bool subghz_bf_has_sub_ext(const char* name) {
-    size_t len = strlen(name);
-    if(len < 5) return false;
-    const char* ext = name + len - 4;
-    return (ext[0] == '.') && (ext[1] == 's' || ext[1] == 'S') &&
-           (ext[2] == 'u' || ext[2] == 'U') && (ext[3] == 'b' || ext[3] == 'B');
+static bool subghz_bf_is_signal(const char* name) {
+    return signal_tx_type_from_name(name) != SignalTypeUnknown;
 }
 
 static uint32_t subghz_bf_count_files(SubGhzBfApp* app) {
@@ -104,7 +101,7 @@ static uint32_t subghz_bf_count_files(SubGhzBfApp* app) {
     if(storage_dir_open(dir, furi_string_get_cstr(app->folder))) {
         while(storage_dir_read(dir, &fileinfo, name, sizeof(name))) {
             if(file_info_is_dir(&fileinfo)) continue;
-            if(subghz_bf_has_sub_ext(name)) count++;
+            if(subghz_bf_is_signal(name)) count++;
         }
     }
     storage_dir_close(dir);
@@ -130,7 +127,7 @@ static void subghz_bf_submenu_callback(void* context, uint32_t index);
 
 static void subghz_bf_build_menu(SubGhzBfApp* app) {
     submenu_reset(app->submenu);
-    submenu_set_header(app->submenu, "SubGHz Bruteforce");
+    submenu_set_header(app->submenu, "Universal Bruteforce");
 
     submenu_add_item(
         app->submenu,
@@ -164,15 +161,16 @@ static void subghz_bf_show_message(SubGhzBfApp* app, const char* header, const c
 
 static void subghz_bf_select_folder(SubGhzBfApp* app) {
     DialogsFileBrowserOptions options;
-    dialog_file_browser_set_basic_options(&options, ".sub", NULL);
-    options.base_path = SUBGHZ_FOLDER;
+    // No extension filter: show every file so mixed-format folders are visible.
+    dialog_file_browser_set_basic_options(&options, "", NULL);
+    options.base_path = BROWSE_ROOT;
     options.select_right = true; // allow selecting a directory with the right key
 
     FuriString* start = furi_string_alloc();
     if(furi_string_size(app->folder) > 0) {
         furi_string_set(start, app->folder);
     } else {
-        furi_string_set(start, SUBGHZ_FOLDER);
+        furi_string_set(start, BROWSE_ROOT);
     }
     FuriString* result = furi_string_alloc();
 
@@ -303,7 +301,7 @@ static void subghz_bf_run_draw(Canvas* canvas, void* model) {
     }
 
     canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 2, 10, "SubGHz Bruteforce");
+    canvas_draw_str(canvas, 2, 10, "Universal Bruteforce");
 
     canvas_set_font(canvas, FontSecondary);
 
@@ -341,14 +339,8 @@ static void subghz_bf_run_draw(Canvas* canvas, void* model) {
     // Current file name
     canvas_draw_str(canvas, 2, 39, m->filename[0] ? m->filename : "-");
 
-    // Frequency + protocol
-    snprintf(
-        buf,
-        sizeof(buf),
-        "%lu.%02lu MHz %s",
-        (unsigned long)(m->frequency / 1000000),
-        (unsigned long)((m->frequency % 1000000) / 10000),
-        m->protocol);
+    // Signal type + info (e.g. "SubGHz 433.92 Princeton", "IR 3 signal(s)").
+    snprintf(buf, sizeof(buf), "%s %s", m->type[0] ? m->type : "-", m->info);
     canvas_draw_str(canvas, 2, 49, buf);
 
     // Bottom row: navigation hints / status.
@@ -457,7 +449,7 @@ static void subghz_bf_sort_names(char** items, size_t count) {
     }
 }
 
-// Build the sorted list of .sub files, updating the loading screen as it goes.
+// Build the sorted list of signal files, updating the loading screen as it goes.
 static void subghz_bf_scan(SubGhzBfApp* app, SubGhzBfNameList* list) {
     File* dir = storage_file_alloc(app->storage);
     char name[MAX_NAME_LEN];
@@ -467,7 +459,7 @@ static void subghz_bf_scan(SubGhzBfApp* app, SubGhzBfNameList* list) {
         while(storage_dir_read(dir, &fileinfo, name, sizeof(name))) {
             if(app->worker_stop) break;
             if(file_info_is_dir(&fileinfo)) continue;
-            if(!subghz_bf_has_sub_ext(name)) continue;
+            if(!subghz_bf_is_signal(name)) continue;
             subghz_bf_namelist_add(list, name);
 
             uint32_t found = list->count;
@@ -542,7 +534,7 @@ static int32_t subghz_bf_worker(void* context) {
         app->run_view, SubGhzBfRunModel * m, { m->scanning = false; m->total = total; }, true);
 
     // Phase 2: transmit each signal.
-    subghz_tx_session_begin(app->tx);
+    signal_tx_session_begin(app->tx);
     notification_message(app->notifications, &sequence_blink_start_blue);
 
     uint32_t cycle = 0;
@@ -574,6 +566,10 @@ static int32_t subghz_bf_worker(void* context) {
             FuriString* path =
                 furi_string_alloc_printf("%s/%s", furi_string_get_cstr(app->folder), name);
 
+            SignalType type = signal_tx_type_from_name(name);
+            const char* type_str = signal_tx_type_str(type);
+            bool emulation = signal_tx_is_emulation(type);
+
             uint32_t idx1 = (uint32_t)i + 1;
             with_view_model(
                 app->run_view,
@@ -583,18 +579,25 @@ static int32_t subghz_bf_worker(void* context) {
                     m->cycle = cycle;
                     strncpy(m->filename, name, sizeof(m->filename) - 1);
                     m->filename[sizeof(m->filename) - 1] = '\0';
+                    strncpy(m->type, type_str, sizeof(m->type) - 1);
+                    m->type[sizeof(m->type) - 1] = '\0';
                 },
                 true);
 
-            SubGhzTxFileInfo txinfo = {0};
-            SubGhzTxResult res = SubGhzTxResultOk;
-            for(uint32_t r = 0; r < app->repeats; r++) {
+            // Emulation formats hold the field for a dwell time; one-shot formats
+            // fire `repeats` times. The abort flag ends either early.
+            uint32_t dwell = app->delay_ms < EMULATE_MIN_MS ? EMULATE_MIN_MS : app->delay_ms;
+            uint32_t passes = emulation ? 1 : app->repeats;
+
+            SignalTxInfo txinfo = {0};
+            SignalTxResult res = SignalTxOk;
+            for(uint32_t r = 0; r < passes; r++) {
                 if(app->worker_stop || app->worker_skip != 0) break;
                 app->worker_abort = false;
-                res = subghz_tx_transmit_file(
-                    app->tx, furi_string_get_cstr(path), &txinfo, &app->worker_abort);
-                if(res != SubGhzTxResultOk) break;
-                if(r + 1 < app->repeats && app->delay_ms) {
+                res = signal_tx_play(
+                    app->tx, type, furi_string_get_cstr(path), dwell, &txinfo, &app->worker_abort);
+                if(res != SignalTxOk) break;
+                if(r + 1 < passes && app->delay_ms) {
                     if(!subghz_bf_wait(app, app->delay_ms)) break;
                 }
             }
@@ -603,15 +606,14 @@ static int32_t subghz_bf_worker(void* context) {
                 app->run_view,
                 SubGhzBfRunModel * m,
                 {
-                    m->frequency = txinfo.frequency;
-                    strncpy(m->protocol, txinfo.protocol, sizeof(m->protocol) - 1);
-                    m->protocol[sizeof(m->protocol) - 1] = '\0';
-                    if(res == SubGhzTxResultOk) {
+                    strncpy(m->info, txinfo.label, sizeof(m->info) - 1);
+                    m->info[sizeof(m->info) - 1] = '\0';
+                    if(res == SignalTxOk) {
                         m->sent_ok++;
-                    } else if(res != SubGhzTxResultStopped) {
+                    } else if(res != SignalTxStopped) {
                         m->errors++;
                     }
-                    strncpy(m->status, subghz_tx_result_str(res), sizeof(m->status) - 1);
+                    strncpy(m->status, signal_tx_result_str(res), sizeof(m->status) - 1);
                     m->status[sizeof(m->status) - 1] = '\0';
                 },
                 true);
@@ -643,7 +645,7 @@ static int32_t subghz_bf_worker(void* context) {
     } while(app->loop && !app->worker_stop);
 
     notification_message(app->notifications, &sequence_blink_stop);
-    subghz_tx_session_end(app->tx);
+    signal_tx_session_end(app->tx);
 
     with_view_model(
         app->run_view,
@@ -665,7 +667,9 @@ static int32_t subghz_bf_worker(void* context) {
 static void subghz_bf_start_attack(SubGhzBfApp* app) {
     if(furi_string_size(app->folder) == 0 || app->file_count == 0) {
         subghz_bf_show_message(
-            app, "No signals", "Select a folder that\ncontains .sub files first.");
+            app,
+            "No signals",
+            "Select a folder with\n.sub/.ir/.rfid/.ibtn/.nfc\nfiles first.");
         return;
     }
 
@@ -688,7 +692,7 @@ static void subghz_bf_start_attack(SubGhzBfApp* app) {
         },
         true);
 
-    app->worker = furi_thread_alloc_ex("SubGhzBfWorker", 4096, subghz_bf_worker, app);
+    app->worker = furi_thread_alloc_ex("UniBfWorker", 8192, subghz_bf_worker, app);
     furi_thread_start(app->worker);
 
     view_dispatcher_switch_to_view(app->view_dispatcher, SubGhzBfViewRun);
@@ -722,7 +726,7 @@ static SubGhzBfApp* subghz_bf_app_alloc(void) {
     app->dialogs = furi_record_open(RECORD_DIALOGS);
     app->notifications = furi_record_open(RECORD_NOTIFICATION);
 
-    app->tx = subghz_tx_alloc();
+    app->tx = signal_tx_alloc();
 
     app->view_dispatcher = view_dispatcher_alloc();
     view_dispatcher_attach_to_gui(app->view_dispatcher, app->gui, ViewDispatcherTypeFullscreen);
@@ -762,18 +766,28 @@ static SubGhzBfApp* subghz_bf_app_alloc(void) {
         0,
         128,
         64,
-        "\e#SubGHz Bruteforce\e#\n"
-        "Transmits every .sub file in\n"
-        "a chosen folder, one by one -\n"
-        "a radio dictionary attack,\n"
-        "like the IR universal remote.\n\n"
+        "\e#Universal Bruteforce\e#\n"
+        "Plays every signal file in a\n"
+        "chosen folder, one by one -\n"
+        "a dictionary attack across\n"
+        "formats.\n\n"
+        "Supports:\n"
+        ".sub  Sub-GHz (transmit)\n"
+        ".ir   Infrared (transmit)\n"
+        ".rfid LF RFID (emulate)\n"
+        ".ibtn iButton (emulate)\n"
+        ".nfc  NFC (emulate)\n\n"
         "1. Select folder\n"
         "2. Set delay/repeats/loop\n"
         "3. Start\n\n"
+        "IR files fire every signal\n"
+        "they contain. Emulated types\n"
+        "(RFID/iBtn/NFC) hold each for\n"
+        "the delay time (min 1.5s).\n\n"
         "Left/Right = skip, OK = pause,\n"
         "Back = stop.\n\n"
-        "Only transmit on frequencies\n"
-        "and devices you are legally\n"
+        "Only transmit or emulate on\n"
+        "devices you are legally\n"
         "authorized to operate.");
     view_set_previous_callback(widget_get_view(app->about), subghz_bf_back_to_menu);
     view_dispatcher_add_view(
@@ -797,7 +811,7 @@ static void subghz_bf_app_free(SubGhzBfApp* app) {
     widget_free(app->about);
     view_dispatcher_free(app->view_dispatcher);
 
-    subghz_tx_free(app->tx);
+    signal_tx_free(app->tx);
 
     furi_record_close(RECORD_NOTIFICATION);
     furi_record_close(RECORD_DIALOGS);

@@ -1,23 +1,36 @@
-# SubGHz Bruteforce (Flipper Zero)
+# Universal Bruteforce (Flipper Zero)
 
-Transmits **every `.sub` file in a folder**, one after another — a Sub-GHz
-"dictionary" bruteforcer, the radio equivalent of the infrared universal-remote
-bruteforcer. Point it at a folder of captured/known signals and it replays them
-all in sequence.
+Plays **every signal file in a folder**, one after another — a multi-format
+"dictionary" bruteforcer. Point it at a folder of captured/known signals and it
+replays or emulates them all in sequence, across Sub-GHz, Infrared, RFID,
+iButton and NFC.
 
 Built for **Momentum firmware** (SDK `mntm-012`) using `ufbt`.
+
+## Supported formats
+
+| Ext | Type | Action |
+|------|------|--------|
+| `.sub` | Sub-GHz | Transmits the signal (protocol-encoded or RAW, incl. custom CC1101 presets). |
+| `.ir` | Infrared | Fires **every** signal contained in the file (parsed + raw). |
+| `.rfid` | LF RFID (125 kHz) | Emulates the card for a dwell time. |
+| `.ibtn` | iButton / 1-Wire | Emulates the key for a dwell time. |
+| `.nfc` | NFC | Emulates the tag for a dwell time. |
+
+A single folder can mix all of these — the app detects each file's type by its
+extension and dispatches to the right subsystem.
 
 ## Features
 
 - Pick any folder on the SD card (browse to it, press **Right** to select the folder).
-- Sequentially transmits all `.sub` files found in that folder.
-- Supports both protocol-encoded captures (Princeton, CAME, NICE, KeeLoq, …) and
-  `RAW` captures, including custom CC1101 presets (`Custom_preset_data`).
+- Sequentially plays all supported signal files found in that folder.
+- **One-shot** formats (Sub-GHz, IR) transmit `repeats` times each; **emulation**
+  formats (RFID, iButton, NFC) hold each for the delay time (minimum 1.5 s).
 - Configurable **delay between files**, **repeats per file**, and **loop forever**.
 - **Loading screen** that scans the folder first and shows how many signals were
-  found before transmitting.
-- Live progress screen: file X/Y, progress bar, current filename, frequency,
-  protocol, OK/error counts.
+  found before playback.
+- Live progress screen: file X/Y, progress bar, current filename, signal type +
+  info, OK/error counts.
 - Controls: **Left/Right** = skip to previous/next signal (hold to fast-skip),
   **OK** = pause/resume, **Back** = stop and return.
 
@@ -27,6 +40,7 @@ Built for **Momentum firmware** (SDK `mntm-012`) using `ufbt`.
 |------|---------|
 | `application.fam` | App manifest (id, entry point, category, icon). |
 | `subghz_bruteforce.c` | UI (menu / settings / run screen), folder picker, worker thread. |
+| `signal_tx.c` / `signal_tx.h` | Multi-format dispatch: type detection + IR/RFID/iButton/NFC backends. |
 | `subghz_tx.c` / `subghz_tx.h` | Sub-GHz transmit engine — parses a `.sub` file and keys the radio. |
 | `icon.png` | 10×10 app icon. |
 
@@ -41,16 +55,14 @@ install locally.
 4. Pick the firmware target: choose **Momentum** if it's listed. If it isn't,
    pick **Unleashed** — Momentum is a fork of Unleashed and runs Unleashed apps.
 5. Build, then **download `subghz_bruteforce.fap`**.
-6. Copy it to `SD/apps/Sub-GHz/` on the Flipper (or drag it in via qFlipper).
-
-These sites just run `ufbt` on the repo for you, so the repo only needs a valid
-`application.fam` at its root — which it already has.
+6. Copy it to `SD/apps/Tools/` on the Flipper (or drag it in via qFlipper).
 
 ## Build with GitHub Actions
 
 This repo also includes `.github/workflows/build.yml`, which builds the FAP on
 every push and uploads it as a run artifact (**Actions** tab → latest run →
-**Artifacts → subghz_bruteforce-fap**). It targets Momentum via ufbt.
+**Artifacts → subghz_bruteforce-fap**). Pushing a `v*` tag additionally publishes
+a **Release** with the `.fap` attached.
 
 ## Build locally
 
@@ -70,26 +82,25 @@ python -m ufbt            # builds dist\subghz_bruteforce.fap
 python -m ufbt launch
 ```
 
-The resulting `subghz_bruteforce.fap` goes in `SD Card/apps/Sub-GHz/` on the
-Flipper (it appears under **Apps → Sub-GHz**).
-
-> The SDK is already deployed locally under `~/.ufbt`; only the toolchain
-> download is required to finish the first build.
+The resulting `subghz_bruteforce.fap` goes in `SD Card/apps/Tools/` on the
+Flipper (it appears under **Apps → Tools → Universal Bruteforce**).
 
 ## Usage
 
-1. Put your `.sub` captures in a folder on the SD card (e.g. `SD/subghz/mydict/`).
-2. Open **Apps → Sub-GHz → SubGHz Bruteforce**.
+1. Put your signal files in a folder on the SD card. They can be any mix of
+   `.sub`, `.ir`, `.rfid`, `.ibtn` and `.nfc`.
+2. Open **Apps → Tools → Universal Bruteforce**.
 3. **Select folder** → browse to the folder → press **Right** to choose it.
-4. (Optional) **Settings** → set delay / repeats / loop.
+4. (Optional) **Settings** → set delay / repeats / loop. The delay also sets the
+   emulation dwell time for RFID/iButton/NFC (clamped to a 1.5 s minimum).
 5. **Start**. A loading screen scans the folder and shows the signal count, then
-   transmission begins. **Left/Right** skip between signals, **OK** pauses,
+   playback begins. **Left/Right** skip between signals, **OK** pauses,
    **Back** stops.
 
 ## Legal / safety
 
-Only transmit on frequencies and to devices you are **legally authorized** to
-operate. Replaying access-control signals (gates, garages, cars, etc.) that you
-do not own or have permission to test may be illegal in your jurisdiction.
+Only transmit or emulate on devices you are **legally authorized** to operate.
+Replaying access-control signals (gates, garages, cars, badges, fobs, etc.) that
+you do not own or have permission to test may be illegal in your jurisdiction.
 Fixed-code signals are also replayable in ways rolling-code systems are not —
 know what you are transmitting.
