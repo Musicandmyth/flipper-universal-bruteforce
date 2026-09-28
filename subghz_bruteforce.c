@@ -442,8 +442,19 @@ static void subghz_bf_namelist_free(SubGhzBfNameList* list) {
     list->cap = 0;
 }
 
-static int subghz_bf_name_cmp(const void* a, const void* b) {
-    return strcmp(*(const char* const*)a, *(const char* const*)b);
+// Insertion sort by filename. The C library qsort() is present in the
+// firmware's symbol table but disabled, so an app that references it fails the
+// FAP API check; we sort in-place instead.
+static void subghz_bf_sort_names(char** items, size_t count) {
+    for(size_t i = 1; i < count; i++) {
+        char* key = items[i];
+        size_t j = i;
+        while(j > 0 && strcmp(items[j - 1], key) > 0) {
+            items[j] = items[j - 1];
+            j--;
+        }
+        items[j] = key;
+    }
 }
 
 // Build the sorted list of .sub files, updating the loading screen as it goes.
@@ -468,7 +479,7 @@ static void subghz_bf_scan(SubGhzBfApp* app, SubGhzBfNameList* list) {
     storage_file_free(dir);
 
     if(list->count > 1) {
-        qsort(list->items, list->count, sizeof(char*), subghz_bf_name_cmp);
+        subghz_bf_sort_names(list->items, list->count);
     }
 }
 
